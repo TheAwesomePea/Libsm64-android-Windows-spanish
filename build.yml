@@ -1,0 +1,67 @@
+name: Crear sm64.wasm
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar libsm64
+        run: git clone --depth 1 https://github.com/libsm64/libsm64.git
+      - name: Instalar Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git
+          ./emsdk/emsdk install latest
+          ./emsdk/emsdk activate latest
+      - name: Compilar
+        run: |
+          source ./emsdk/emsdk_env.sh
+          cat > build_wasm.py <<'PYEOF'
+          #!/usr/bin/env python3
+          """Compila libsm64 a WebAssembly (sm64.wasm) con Emscripten.
+
+          Requisitos: emsdk activo (emcc en el PATH), Python 3 e internet
+          (import-mario-geo.py descarga la geometria de Mario la primera vez).
+          La ROM NO se necesita para compilar: solo se carga luego en la pagina de prueba.
+
+          Uso:  python build_wasm.py [carpeta_libsm64]
+          """
+          import glob, os, re, shutil, subprocess, sys
+
+          root = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else '.')
+          os.chdir(root)
+
+          emcc = shutil.which('emcc') or shutil.which('emcc.bat')
+          if not emcc:
+              sys.exit('No se encontro emcc. Instala Emscripten (emsdk) y activa su entorno (emsdk_env).')
+
+          if not os.path.exists('src/decomp/mario/geo.inc.c'):
+              subprocess.check_call([sys.executable, 'import-mario-geo.py'])
+
+          dirs = ('src src/decomp src/decomp/engine src/decomp/include/PR src/decomp/game '
+                  'src/decomp/pc src/decomp/pc/audio src/decomp/mario src/decomp/tools '
+                  'src/decomp/audio').split()
+          srcs = sorted({f.replace('\\', '/') for d in dirs for f in glob.glob(d + '/*.c')}
+                        | {'src/decomp/mario/geo.inc.c', 'src/decomp/mario/model.inc.c'})
+
+          header = open('src/libsm64.h', encoding='utf-8').read()
+          api = re.findall(r'SM64_LIB_FN\s+[\w\s\*]*?\b(sm64_\w+)\s*\(', header)
+          exports = ['_malloc', '_free'] + ['_' + n for n in api]
+
+          cmd = [emcc, '-O2', '-fno-strict-aliasing', '-Wno-unused-function',
+                 '-DSM64_LIB_EXPORT', '-DGBI_FLOATS', '-DVERSION_US', '-DNO_SEGMENTED_MEMORY',
+                 '-I', 'src/decomp/include', *srcs,
+                 '-o', 'sm64.wasm', '--no-entry',
+                 '-sSTANDALONE_WASM', '-sALLOW_MEMORY_GROWTH', '-sINITIAL_MEMORY=134217728',
+                 '-sSTACK_SIZE=1048576', '-sERROR_ON_UNDEFINED_SYMBOLS=0',
+                 '-sEXPORTED_FUNCTIONS=' + ','.join(exports)]
+
+          print('Compilando %d archivos .c, %d funciones exportadas...' % (len(srcs), len(api)))
+          subprocess.check_call(cmd)
+          print('Listo: ' + os.path.join(root, 'sm64.wasm'))
+
+          PYEOF
+          python3 build_wasm.py libsm64
+      - name: Guardar resultado
+        uses: actions/upload-artifact@v4
+        with:
+          name: sm64-wasm
+          path: libsm64/sm64.wasm
