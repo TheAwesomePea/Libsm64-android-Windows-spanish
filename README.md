@@ -1,0 +1,1 @@
+# Libsm64-android-Windows-spanish
